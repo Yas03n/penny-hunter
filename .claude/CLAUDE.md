@@ -47,7 +47,7 @@ better: a scraper that runs twice a day and writes 91 rows never needed Postgres
 |---|---|
 | `hunt.py` | The entire program. Scrape → diff → notify → render. |
 | `data/finds.json` | State: `{sku: {label, source, url, first_seen, last_seen}}`. Sorted by SKU so git diffs stay readable. |
-| `templates/index.html` | Site template. `{{COUNT}} {{STAMP}} {{SUMMARY}} {{ROWS}}`. |
+| `templates/index.html` | Site template. `{{COUNT}} {{STAMP}} {{NEXT}} {{SUMMARY}} {{CARDS}}`. |
 | `docs/index.html` | **Generated — never hand-edit.** GitHub Pages serves this. |
 | `.github/workflows/hunt.yml` | The 4 AM / 1 PM PT schedule. |
 | `archive/` | Pre-migration Supabase export. **Gitignored**, local only. |
@@ -61,8 +61,13 @@ better: a scraper that runs twice a day and writes 91 rows never needed Postgres
   speak for itself. Beginner-readable over clever.
 - `data/finds.json` is written sorted by key. Keep it that way — the daily bot
   commit should show only genuinely changed rows.
-- The site's CSS is inherited verbatim from the original hand-built page. Don't
-  restyle it wholesale; it is already tuned for the iPhone home screen.
+- The site keeps the original hand-built page's colour tokens and feel. It is used
+  almost entirely on an iPhone, so **mobile is the primary target** — verify at a
+  ~390px width before anything else.
+- **Never lay out finds as a `<table>`.** The first version did, and it forced the
+  whole page to scroll sideways to reach the "Check stock" button. Finds are flex
+  cards that wrap; under 520px the button drops to its own full-width row. `body`
+  carries `overflow-x:hidden` as a backstop. Keep both.
 
 ## Secrets
 
@@ -120,6 +125,13 @@ trusting it.
   pushed. Never let a bad scrape wipe the finds.
 - Historical SKUs stay in `data/finds.json` forever even after they drop off the
   lists. `last_seen` is how you tell live from stale.
+- **The site sorts by "still on the list", not by date.** A SKU whose `last_seen`
+  matches the newest sweep is ranked first and badged "on list now"; everything
+  else is badged "gone since …". Sorting purely by `first_seen` made every
+  migrated SKU look equally stale and read as a broken page.
+- The status strip up top ("Last checked / Next check / Tracking") exists so a
+  quiet day is legible as "nothing new" rather than "this is frozen". Don't
+  remove it — that confusion is exactly what prompted it.
 
 ## Known limits
 

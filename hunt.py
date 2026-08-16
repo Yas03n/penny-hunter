@@ -91,7 +91,7 @@ LABEL_BOUNDARY_RE = re.compile(
     re.I,
 )
 
-MAX_ROWS_ON_SITE = 40
+MAX_ROWS_ON_SITE = 60
 MAX_ITEMS_IN_PUSH = 5
 
 
@@ -217,46 +217,100 @@ def short_date(iso):
         return "—"
 
 
+def next_sweep(now):
+    """Return the next 4 AM / 1 PM Pacific sweep as a friendly string.
+
+    Shown on the site so a quiet day reads as "nothing new yet" rather than
+    "this page is broken" — the complaint that prompted adding it.
+    """
+    try:
+        from zoneinfo import ZoneInfo
+        la = ZoneInfo("America/Los_Angeles")
+    except Exception:
+        return "4 AM & 1 PM PT"
+
+    local = now.astimezone(la)
+    for hour in (4, 13):
+        if local.hour < hour:
+            when = local.replace(hour=hour, minute=0, second=0, microsecond=0)
+            return when.strftime("%-I:%M %p") + " PT today"
+    return "4:00 AM PT tomorrow"
+
+
+# Most labels end with the penny price and the retail price ("… $0.01 $11.98").
+# Pulling the retail figure out gives the card a clean name plus a "was $11.98"
+# pill, instead of one long run-on string.
+PRICE_RE = re.compile(r"\s*\$0\.01\s+\$([\d,]+\.\d{2})\s*$")
+
+
+def split_price(label):
+    """Return (label_without_prices, retail_or_None)."""
+    m = PRICE_RE.search(label)
+    if not m:
+        return label, None
+    return label[:m.start()].strip(" .…"), m.group(1)
+
+
 def build_site(store, new_count, failures, now):
     """Render docs/index.html from the template with the finds baked in.
 
     Baking the rows at build time is what removes the API key from the page:
     the browser fetches nothing, so there is nothing to authenticate.
     """
-    newest = sorted(store.items(), key=lambda kv: kv[1].get("first_seen", ""), reverse=True)
+    # "Still on the list" is the distinction that actually decides whether a lead
+    # is worth driving to, so sort on it first and label it — ordering purely by
+    # first_seen made every migrated SKU look equally stale.
+    latest_sweep = max((f.get("last_seen", "") for f in store.values()), default="")
+    ranked = sorted(
+        store.items(),
+        key=lambda kv: (kv[1].get("last_seen", "") == latest_sweep, kv[1].get("first_seen", "")),
+        reverse=True,
+    )
 
     rows = []
-    for sku, f in newest[:MAX_ROWS_ON_SITE]:
+    for sku, f in ranked[:MAX_ROWS_ON_SITE]:
         digits = sku.replace("-", "")
+        name, retail = split_price(f.get("label", ""))
+        live = f.get("last_seen", "") == latest_sweep
         rows.append(
-            "<tr>"
-            f'<td>{html.escape(f.get("label", ""))}</td>'
-            f'<td class="sku">{html.escape(sku)}</td>'
-            f'<td class="src">{html.escape(f.get("source", ""))}</td>'
-            f'<td class="src">{short_date(f.get("first_seen", ""))}</td>'
-            f'<td><a class="check" target="_blank" rel="noopener" '
-            f'href="https://www.homedepot.com/s/{digits}">Check stock &#8594;</a></td>'
-            "</tr>"
+            '<article class="find">'
+            '<div class="find-body">'
+            f"<h3>{html.escape(name)}</h3>"
+            '<div class="find-meta">'
+            + (
+                '<span class="live">● on list now</span>'
+                if live
+                else f'<span class="gone">○ gone since {short_date(f.get("last_seen", ""))}</span>'
+            )
+            + f'<span class="sku">{html.escape(sku)}</span>'
+            f"<span>{html.escape(f.get('source', ''))}</span>"
+            f"<span>added {short_date(f.get('first_seen', ''))}</span>"
+            + (f'<span class="retail">was ${html.escape(retail)}</span>' if retail else "")
+            + "</div></div>"
+            f'<a class="go" target="_blank" rel="noopener" '
+            f'href="https://www.homedepot.com/s/{digits}">Check stock &#8594;</a>'
+            "</article>"
         )
 
     if new_count:
         summary = (
-            f"{new_count} new SKU{'s' if new_count != 1 else ''} since the last sweep. "
-            "Sorted newest first — only an in-store UPC scan confirms a penny."
+            f"{new_count} new SKU{'s' if new_count != 1 else ''} found on the last sweep. "
+            "Dates below are when a SKU first appeared on the lists, not when it was checked."
         )
     else:
         summary = (
-            "No new SKUs this sweep. The list below is everything currently tracked, "
-            "newest first — only an in-store UPC scan confirms a penny."
+            "Nothing new on the last sweep — both lists are unchanged. Dates below are when "
+            "a SKU first appeared on the lists, not when it was checked."
         )
     if failures:
-        summary += f" (Source unreachable this run: {', '.join(failures)}.)"
+        summary += f" Source unreachable this run: {', '.join(failures)}."
 
     page = TEMPLATE_FILE.read_text()
     page = page.replace("{{COUNT}}", str(len(store)))
-    page = page.replace("{{STAMP}}", f"Last swept {la_stamp(now)} · refreshes 4 AM &amp; 1 PM PT")
+    page = page.replace("{{STAMP}}", la_stamp(now))
+    page = page.replace("{{NEXT}}", next_sweep(now))
     page = page.replace("{{SUMMARY}}", summary)
-    page = page.replace("{{ROWS}}", "".join(rows))
+    page = page.replace("{{CARDS}}", "".join(rows))
 
     SITE_FILE.parent.mkdir(parents=True, exist_ok=True)
     SITE_FILE.write_text(page)
