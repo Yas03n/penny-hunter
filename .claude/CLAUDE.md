@@ -12,16 +12,22 @@ in six months with zero maintenance", not for features.
 ## Architecture in one breath
 
 ```
-GitHub Actions (cron, 4 AM + 1 PM PT)
+GitHub Actions (cron, every 10 min — 144 sweeps/day)
   └─ hunt.py
        ├─ reads   data/finds.json          ← state, versioned in git
        ├─ scrapes PennyCentral + Penny Pinchin' Mom
+       ├─ has_changed()?  no  → exit, write nothing, say nothing
+       │                  yes ↓
        ├─ writes  data/finds.json          ← + newly-seen SKUs
        ├─ renders templates/index.html → docs/index.html
-       └─ pushes  ONE ntfy digest → phone
+       └─ pushes  ONE ntfy alert → phone
   └─ commits both files back to the repo
 GitHub Pages serves docs/ → https://yas03n.github.io/penny-hunter/
 ```
+
+Two of the 144 daily sweeps (4 AM and 1 PM Pacific) run with `--digest`, which
+forces a rebuild and a notification even when nothing changed. That is both the
+daily check-in and the proof the job is still alive.
 
 There is **no database, no server, and no API key anywhere**. That is the whole
 design. If a change would reintroduce any of the three, it is the wrong change.
@@ -114,13 +120,21 @@ trusting it.
 
 - **One digest per run, never one push per SKU.** A list refresh can surface 40
   SKUs at once; 40 buzzes at 4 AM is how you stop reading notifications.
-- **It notifies even when there is nothing new** (low priority, "No new penny
-  leads"). That is the point — it confirms the sweep ran. To go quiet on empty
-  runs, return early in `notify()` when `new_skus` is empty.
-- **Four cron entries for two daily runs.** Actions cron is UTC-only; 4 AM PT is
-  11:00 UTC in summer and 12:00 UTC in winter. The job gates on the real Pacific
-  hour, so it self-corrects across DST. Trade-off: if Actions delays a run past
-  the hour boundary, that sweep is skipped rather than fired at the wrong time.
+- **A sweep that finds nothing writes nothing and says nothing.** At 144 sweeps a
+  day, writing every time would bury the repo in empty commits and the phone in
+  empty alerts. `has_changed()` compares `{sku: price}` against the last written
+  state, which catches an arrival, a drop-off and a price move in one comparison
+  — including the one-in-one-out case a count check would miss. **A commit in
+  this repo therefore means the lists actually moved.**
+- **`has_changed()` must be called before `merge()`**, which stamps `last_seen`
+  and would erase the very difference being measured.
+- **The 4 AM / 1 PM digests notify even when nothing is new.** That is the point
+  — it confirms the job is alive. The gate is on the *Pacific* hour with
+  `minute < 10`, so it survives DST without touching the cron and fires once per
+  digest hour rather than on all six sweeps in it.
+- **Actions cron is best-effort.** Runs queue under load and can land several
+  minutes late or be skipped entirely; 10 minutes is the target, not a promise.
+  Do not present it as a guarantee.
 - **If every source fails, state and site are left untouched** and a warning is
   pushed. Never let a bad scrape wipe the finds.
 - Historical SKUs stay in `data/finds.json` forever even after they drop off the

@@ -1,11 +1,15 @@
 # PennyHunter
 
-Twice a day it scrapes the community Home Depot penny lists, sends one
-notification if anything is new, and rebuilds a one-page site with the current
-finds. Built for one person shopping Irvine, CA (92614).
+Every 10 minutes it scrapes the community Home Depot penny lists, alerts your
+phone the moment anything new appears, and rebuilds a one-page site with the
+current finds. Built for one person shopping Irvine, CA (92614).
 
 **Site:** https://yas03n.github.io/penny-hunter/
-**Sweeps:** 4:00 AM and 1:00 PM Pacific, every day.
+**Sweeps:** every 10 minutes, plus a check-in digest at 4:00 AM and 1:00 PM Pacific.
+
+A sweep that finds nothing writes nothing and sends nothing, so a commit here
+means the lists actually moved. GitHub's scheduler is best-effort — runs can be
+a few minutes late under load.
 
 ## How it works
 
@@ -30,7 +34,8 @@ export NTFY_TOPIC=<your ntfy topic>   # only needed to test the phone push
 
 python3 hunt.py --dry-run   # scrape and report — writes nothing, pushes nothing
 python3 hunt.py --no-push   # write state + site, stay silent
-python3 hunt.py             # the real thing
+python3 hunt.py             # a routine sweep: acts only if the lists moved
+python3 hunt.py --digest    # check-in: rebuild and notify even if nothing changed
 ```
 
 Then `open docs/index.html`.

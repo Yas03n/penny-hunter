@@ -94,6 +94,10 @@ LABEL_BOUNDARY_RE = re.compile(
 MAX_ROWS_ON_SITE = 60
 MAX_ITEMS_IN_PUSH = 5
 
+# Sweep cadence, for display only — the real schedule lives in the workflow cron.
+# Keep the two in step if you change one.
+CHECK_EVERY_MIN = 10
+
 
 # ---------------------------------------------------------------------------
 # State
@@ -185,6 +189,21 @@ def scrape_all():
                 "url": src["link"],
             })
     return finds, failures
+
+
+def has_changed(store, scraped):
+    """True if this scrape differs from the last one that was written.
+
+    Running every 10 minutes means ~144 sweeps a day, and writing on every sweep
+    would bury the repo in commits that say nothing. The previous live set is
+    derived from the records whose last_seen matches the newest write, so no
+    extra bookkeeping is needed — and comparing {sku: price} catches all three
+    kinds of change at once: a SKU appearing, a SKU dropping off, a price moving.
+    """
+    latest = max((f.get("last_seen", "") for f in store.values()), default="")
+    was = {sku: f.get("price") for sku, f in store.items() if f.get("last_seen", "") == latest}
+    now = {sku: info.get("price") for sku, info in scraped.items()}
+    return was != now
 
 
 def merge(store, scraped, now_iso):
@@ -330,13 +349,15 @@ def build_site(store, new_count, failures, now):
 
     if new_count:
         summary = (
-            f"{new_count} new SKU{'s' if new_count != 1 else ''} found on the last sweep. "
-            "Dates below are when a SKU first appeared on the lists, not when it was checked."
+            f"{new_count} new SKU{'s' if new_count != 1 else ''} on the last sweep — "
+            f"your phone was alerted the moment they appeared. Dates are when a SKU first "
+            "showed up on the lists, not when it was last checked."
         )
     else:
         summary = (
-            "Nothing new on the last sweep — both lists are unchanged. Dates below are when "
-            "a SKU first appeared on the lists, not when it was checked."
+            f"The lists are checked every {CHECK_EVERY_MIN} minutes and you are alerted the "
+            "moment anything new appears. This page only changes when the lists do, so an "
+            "older timestamp means nothing has moved — not that it has stopped."
         )
     if failures:
         summary += f" Source unreachable this run: {', '.join(failures)}."
@@ -344,7 +365,7 @@ def build_site(store, new_count, failures, now):
     page = TEMPLATE_FILE.read_text()
     page = page.replace("{{COUNT}}", str(len(store)))
     page = page.replace("{{STAMP}}", la_stamp(now))
-    page = page.replace("{{NEXT}}", next_sweep(now))
+    page = page.replace("{{NEXT}}", f"every {CHECK_EVERY_MIN} min")
     page = page.replace("{{SUMMARY}}", summary)
     page = page.replace("{{CARDS}}", "".join(rows))
 
@@ -411,6 +432,8 @@ def main():
     ap = argparse.ArgumentParser(description="Scrape penny lists, alert, rebuild the site.")
     ap.add_argument("--dry-run", action="store_true", help="scrape and report only — no writes, no push")
     ap.add_argument("--no-push", action="store_true", help="write state and site but send no notification")
+    ap.add_argument("--digest", action="store_true",
+                    help="daily check-in: rebuild and notify even when nothing changed")
     args = ap.parse_args()
 
     now = datetime.now(timezone.utc)
@@ -427,8 +450,11 @@ def main():
             notify(store, [], failures)
         return 1
 
+    # Decide before merging — merge() stamps last_seen and would erase the diff.
+    changed = has_changed(store, scraped)
+
     new_skus = merge(store, scraped, now_iso)
-    print(f"New this run: {len(new_skus)}")
+    print(f"New this run: {len(new_skus)}  (lists changed: {changed})")
     for sku in new_skus:
         print(f"  + {sku} — {store[sku]['label'][:70]}")
 
@@ -436,12 +462,20 @@ def main():
         print("Dry run — nothing written, nothing pushed.")
         return 0
 
+    # A sweep that found nothing new writes nothing at all. At ~144 sweeps a day
+    # that keeps the repo history meaningful: a commit means the lists moved.
+    if not changed and not args.digest:
+        print("No change since the last write — leaving state and site untouched.")
+        return 0
+
     save_store(store)
     rendered = build_site(store, len(new_skus), failures, now)
     print(f"Wrote {STORE_FILE.relative_to(ROOT)} ({len(store)} SKUs) "
           f"and {SITE_FILE.relative_to(ROOT)} ({rendered} rows)")
 
-    if not args.no_push:
+    # Alert on anything new the instant it appears; otherwise only on the twice-
+    # daily check-in, so a quiet day is two notifications and not a hundred.
+    if not args.no_push and (new_skus or args.digest):
         notify(store, new_skus, failures)
     return 0
 
