@@ -175,8 +175,15 @@ def scrape_all():
         found = extract_finds(r.text)
         print(f"[{src['name']}] {len(found)} SKUs on page")
         for sku, label in found.items():
+            name, price, retail = split_price(label)
             # First source to report a SKU keeps the attribution.
-            finds.setdefault(sku, {"label": label, "source": src["name"], "url": src["link"]})
+            finds.setdefault(sku, {
+                "label": name,
+                "price": price,
+                "retail": retail,
+                "source": src["name"],
+                "url": src["link"],
+            })
     return finds, failures
 
 
@@ -190,6 +197,11 @@ def merge(store, scraped, now_iso):
             # Backfill a better label if we previously stored a useless one.
             if store[sku].get("label", "") in ("", "(no label)") and info["label"] != "(no label)":
                 store[sku]["label"] = info["label"]
+            # A live price always beats a stored one — this is how a price change
+            # on the source page reaches the site.
+            store[sku]["price"] = info["price"]
+            if info.get("retail"):
+                store[sku]["retail"] = info["retail"]
         else:
             store[sku] = {**info, "first_seen": now_iso, "last_seen": now_iso}
             new_skus.append(sku)
@@ -237,18 +249,31 @@ def next_sweep(now):
     return "4:00 AM PT tomorrow"
 
 
-# Most labels end with the penny price and the retail price ("… $0.01 $11.98").
-# Pulling the retail figure out gives the card a clean name plus a "was $11.98"
-# pill, instead of one long run-on string.
-PRICE_RE = re.compile(r"\s*\$0\.01\s+\$([\d,]+\.\d{2})\s*$")
+# PennyCentral ends each row with the current price then the retail price
+# ("… $0.01 $199.00"). Both numbers are captured rather than assuming the first
+# is always a penny, so if a source ever lists a $0.03 item the card shows the
+# truth instead of a hardcoded lie.
+PRICE_PAIR_RE = re.compile(r"\s*\$([\d,]+\.\d{2})\s+\$([\d,]+\.\d{2})\s*$")
+
+# Penny Pinchin' Mom publishes no prices at all — its page is titled "Home Depot
+# Penny List" and every row on it is claimed to ring at a penny. So an item with
+# no published price is still a penny; that is what the source asserts.
+DEFAULT_PRICE = "0.01"
 
 
 def split_price(label):
-    """Return (label_without_prices, retail_or_None)."""
-    m = PRICE_RE.search(label)
-    if not m:
-        return label, None
-    return label[:m.start()].strip(" .…"), m.group(1)
+    """Return (name, price, retail_or_None) from a scraped label."""
+    m = PRICE_PAIR_RE.search(label)
+    if m:
+        return label[:m.start()].strip(" .…–-"), m.group(1), m.group(2)
+    return label.strip(" .…–-"), DEFAULT_PRICE, None
+
+
+def priced(record):
+    """Read price fields off a record, deriving them for pre-migration rows."""
+    if record.get("price"):
+        return record.get("label", ""), record["price"], record.get("retail")
+    return split_price(record.get("label", ""))
 
 
 def build_site(store, new_count, failures, now):
@@ -270,12 +295,24 @@ def build_site(store, new_count, failures, now):
     rows = []
     for sku, f in ranked[:MAX_ROWS_ON_SITE]:
         digits = sku.replace("-", "")
-        name, retail = split_price(f.get("label", ""))
+        name, price, retail = priced(f)
         live = f.get("last_seen", "") == latest_sweep
+
+        # The price is the headline: it is the reason to drive to the store.
+        price_block = f'<span class="now">${html.escape(price)}</span>'
+        if retail:
+            price_block += f'<span class="was">${html.escape(retail)}</span>'
+            try:
+                saved = float(retail.replace(",", "")) - float(price.replace(",", ""))
+                price_block += f'<span class="save">save ${saved:,.2f}</span>'
+            except ValueError:
+                pass
+
         rows.append(
             '<article class="find">'
             '<div class="find-body">'
             f"<h3>{html.escape(name)}</h3>"
+            f'<div class="price">{price_block}</div>'
             '<div class="find-meta">'
             + (
                 '<span class="live">● on list now</span>'
@@ -285,7 +322,6 @@ def build_site(store, new_count, failures, now):
             + f'<span class="sku">{html.escape(sku)}</span>'
             f"<span>{html.escape(f.get('source', ''))}</span>"
             f"<span>added {short_date(f.get('first_seen', ''))}</span>"
-            + (f'<span class="retail">was ${html.escape(retail)}</span>' if retail else "")
             + "</div></div>"
             f'<a class="go" target="_blank" rel="noopener" '
             f'href="https://www.homedepot.com/s/{digits}">Check stock &#8594;</a>'
