@@ -1,0 +1,9 @@
+# Pre-migration export from the Ascend Supabase project. Kept on disk for
+# reference only — it contains the old publishable key and ~15 MB of compiled
+# edge-function bundles, neither of which belongs in a public repo.
+archive/
+
+__pycache__/
+*.pyc
+.env
+.DS_Store

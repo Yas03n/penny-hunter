@@ -1,0 +1,68 @@
+name: hunt
+
+# Why four cron entries for two daily runs:
+#   GitHub Actions cron is UTC-only and has no DST awareness. 4 AM PT is 11:00 UTC
+#   in summer (PDT) but 12:00 UTC in winter (PST). Scheduling both, then gating on
+#   the actual Pacific hour, gives exactly two runs a day year-round with nothing
+#   to adjust twice a year.
+on:
+  schedule:
+    - cron: "0 11,12,20,21 * * *"
+  workflow_dispatch:        # lets you trigger a sweep by hand from the Actions tab
+
+permissions:
+  contents: write           # needed to commit the refreshed finds back to the repo
+
+concurrency:
+  group: hunt
+  cancel-in-progress: false
+
+jobs:
+  hunt:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Is it 4 AM or 1 PM in Irvine?
+        id: gate
+        run: |
+          HOUR=$(TZ=America/Los_Angeles date +%-H)
+          if [ "${{ github.event_name }}" != "schedule" ]; then
+            echo "Manual run — going ahead."
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          elif [ "$HOUR" = "4" ] || [ "$HOUR" = "13" ]; then
+            echo "It is ${HOUR}:00 PT — sweeping."
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "It is ${HOUR}:00 PT — not a sweep hour, skipping."
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/setup-python@v5
+        if: steps.gate.outputs.run == 'true'
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        if: steps.gate.outputs.run == 'true'
+        run: pip install -r requirements.txt
+
+      - name: Sweep the penny lists
+        if: steps.gate.outputs.run == 'true'
+        env:
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          SITE_URL: ${{ vars.SITE_URL }}
+        run: python hunt.py
+
+      - name: Commit any new finds
+        if: steps.gate.outputs.run == 'true'
+        run: |
+          git config user.name  "penny-hunter[bot]"
+          git config user.email "penny-hunter[bot]@users.noreply.github.com"
+          git add data/finds.json docs/index.html
+          if git diff --staged --quiet; then
+            echo "Nothing changed."
+          else
+            git commit -m "chore: penny sweep $(TZ=America/Los_Angeles date '+%Y-%m-%d %H:%M %Z')"
+            git push
+          fi
