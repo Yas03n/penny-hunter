@@ -58,6 +58,15 @@ SOURCES = [
     },
 ]
 
+# Both sources are NATIONAL lists — an item on them was pennied *somewhere*,
+# not necessarily in Irvine. PennyCentral's ?state= filter is server-side
+# (verified 2026-08-17: CA returns 12 SKUs, TX 13, different sets), so the
+# CA page is the authoritative "confirmed ringing $0.01 in California" set —
+# the closest signal to Irvine short of scanning the shelf. It also reaches
+# SKUs on PennyCentral's later pages that the main scrape never sees.
+HOME_STATE = "CA"
+PC_STATE_URL = f"https://www.pennycentral.com/penny-list?state={HOME_STATE}"
+
 # Home Depot SKUs look like 1004-123-456. The leading "10" is what keeps this
 # from matching phone numbers and prices scattered through the page text.
 SKU_RE = re.compile(r"\b(10\d{2})[- ]?(\d{3})[- ]?(\d{3})\b")
@@ -138,8 +147,20 @@ def clean_label(raw):
     return label or "(no label)"
 
 
+# PennyCentral prints community metadata right after each SKU:
+#   "SKU 1009-074-829 Last seen: Today Community 205 reports 31 states
+#    Reported by dealsincali CA 35 NY 20 TX 18 FL 14 + 27 more Report Find"
+# The state pairs are only the top few — CA can hide inside "+ 27 more", which
+# is why membership in the ?state=CA page, not this text, decides ca_confirmed.
+META_TAIL_RE = re.compile(
+    r"\s*Last seen:.{0,20}?Community\s+(\d+)\s+reports?\s+(\d+)\s+states?"
+    r"(?:\s+Reported by \S+)?((?:\s+[A-Z]{2}\s+\d+)+)?",
+)
+STATE_PAIR_RE = re.compile(r"([A-Z]{2})\s+(\d+)")
+
+
 def extract_finds(page_html):
-    """Return {sku: label} for every Home Depot SKU mentioned on the page."""
+    """Return {sku: {label, reports?, state_counts?}} for every SKU on the page."""
     text = BeautifulSoup(page_html, "html.parser").get_text(" ", strip=True)
     finds = {}
     for m in SKU_RE.finditer(text):
@@ -157,8 +178,34 @@ def extract_finds(page_html):
             # it is one — a length-based guess used to eat brands like "PACKOUT".
             raw = raw.split(" ", 1)[1]
 
-        finds[sku] = clean_label(raw)
+        entry = {"label": clean_label(raw)}
+        meta = META_TAIL_RE.match(text, m.end())
+        if meta:
+            entry["reports"] = int(meta.group(1))
+            if meta.group(3):
+                entry["state_counts"] = dict(
+                    (st, int(n)) for st, n in STATE_PAIR_RE.findall(meta.group(3))
+                )
+        finds[sku] = entry
     return finds
+
+
+def _to_record(entry, src_name, src_link):
+    """Turn an extract_finds() entry into a storeable find record."""
+    name, price, retail = split_price(entry["label"])
+    rec = {
+        "label": name,
+        "price": price,
+        "retail": retail,
+        "source": src_name,
+        "url": src_link,
+    }
+    if "reports" in entry:
+        rec["reports"] = entry["reports"]
+        ca_n = (entry.get("state_counts") or {}).get(HOME_STATE)
+        if ca_n:
+            rec["ca_reports"] = ca_n
+    return rec
 
 
 def scrape_all():
@@ -178,16 +225,27 @@ def scrape_all():
             continue
         found = extract_finds(r.text)
         print(f"[{src['name']}] {len(found)} SKUs on page")
-        for sku, label in found.items():
-            name, price, retail = split_price(label)
+        for sku, entry in found.items():
             # First source to report a SKU keeps the attribution.
-            finds.setdefault(sku, {
-                "label": name,
-                "price": price,
-                "retail": retail,
-                "source": src["name"],
-                "url": src["link"],
-            })
+            finds.setdefault(sku, _to_record(entry, src["name"], src["link"]))
+
+        # The state-filtered page settles "confirmed in my state?" for every
+        # PennyCentral item — and surfaces state-confirmed SKUs from pages the
+        # main scrape never reaches. Skipped silently on failure: ca stays at
+        # its last known value rather than being wrongly cleared.
+        if src["name"] == "PennyCentral":
+            try:
+                rs = requests.get(PC_STATE_URL, headers=HEADERS, timeout=REQUEST_TIMEOUT)
+                rs.raise_for_status()
+                state_finds = extract_finds(rs.text)
+                print(f"[PennyCentral {HOME_STATE}] {len(state_finds)} SKUs confirmed in {HOME_STATE}")
+                for sku, entry in state_finds.items():
+                    finds.setdefault(sku, _to_record(entry, src["name"], src["link"]))
+                    finds[sku]["ca"] = True
+                for sku in found:
+                    finds[sku].setdefault("ca", False)
+            except requests.RequestException as e:
+                print(f"[PennyCentral {HOME_STATE}] fetch failed ({e}) — keeping stored ca flags")
     return finds, failures
 
 
@@ -197,12 +255,24 @@ def has_changed(store, scraped):
     Running every 10 minutes means ~144 sweeps a day, and writing on every sweep
     would bury the repo in commits that say nothing. The previous live set is
     derived from the records whose last_seen matches the newest write, so no
-    extra bookkeeping is needed — and comparing {sku: price} catches all three
-    kinds of change at once: a SKU appearing, a SKU dropping off, a price moving.
+    extra bookkeeping is needed — and comparing (price, ca) per SKU catches a
+    SKU appearing, a SKU dropping off, a price moving, and a California
+    confirmation flipping. Report COUNTS are deliberately excluded: they tick
+    up constantly and would reintroduce the commit spam this check prevents.
     """
+    def signature(rec):
+        return (rec.get("price"), rec.get("ca"))
+
     latest = max((f.get("last_seen", "") for f in store.values()), default="")
-    was = {sku: f.get("price") for sku, f in store.items() if f.get("last_seen", "") == latest}
-    now = {sku: info.get("price") for sku, info in scraped.items()}
+    was = {sku: signature(f) for sku, f in store.items() if f.get("last_seen", "") == latest}
+    now = {}
+    for sku, info in scraped.items():
+        # A failed state-page fetch omits "ca"; fall back to the stored flag so
+        # the comparison sees "unchanged" rather than a phantom flip.
+        sig = signature(info)
+        if "ca" not in info and sku in store:
+            sig = (sig[0], store[sku].get("ca"))
+        now[sku] = sig
     return was != now
 
 
@@ -221,6 +291,12 @@ def merge(store, scraped, now_iso):
             store[sku]["price"] = info["price"]
             if info.get("retail"):
                 store[sku]["retail"] = info["retail"]
+            # Same for community-report metadata. "ca" is only touched when the
+            # scrape actually carried it (the state-page fetch succeeded), so a
+            # transient failure never wrongly clears a confirmation.
+            for k in ("reports", "ca_reports", "ca"):
+                if k in info:
+                    store[sku][k] = info[k]
         else:
             store[sku] = {**info, "first_seen": now_iso, "last_seen": now_iso}
             new_skus.append(sku)
@@ -327,6 +403,19 @@ def build_site(store, new_count, failures, now):
             except ValueError:
                 pass
 
+        # Where has it actually been confirmed? Three honest states:
+        #   confirmed in CA / national reports but no CA yet / source has no data.
+        if f.get("ca"):
+            n = f.get("ca_reports")
+            where = ('<span class="ca-yes">✓ confirmed in CA'
+                     + (f" · {n} report{'s' if n != 1 else ''}" if n else "")
+                     + "</span>")
+        elif f.get("reports"):
+            where = (f'<span class="ca-no">no CA reports yet · '
+                     f'{f["reports"]} nationwide</span>')
+        else:
+            where = '<span class="ca-no">no location data</span>'
+
         rows.append(
             '<article class="find">'
             '<div class="find-body">'
@@ -338,6 +427,7 @@ def build_site(store, new_count, failures, now):
                 if live
                 else f'<span class="gone">○ gone since {short_date(f.get("last_seen", ""))}</span>'
             )
+            + where
             + f'<span class="sku">{html.escape(sku)}</span>'
             f"<span>{html.escape(f.get('source', ''))}</span>"
             f"<span>added {short_date(f.get('first_seen', ''))}</span>"
@@ -392,7 +482,8 @@ def notify(store, new_skus, failures):
         title = f"{len(new_skus)} new penny lead{'s' if len(new_skus) != 1 else ''}"
         lines = []
         for sku in new_skus[:MAX_ITEMS_IN_PUSH]:
-            lines.append(f"• {sku} — {store[sku]['label'][:70]}")
+            ca_mark = " ✓CA" if store[sku].get("ca") else ""
+            lines.append(f"• {sku}{ca_mark} — {store[sku]['label'][:70]}")
         if len(new_skus) > MAX_ITEMS_IN_PUSH:
             lines.append(f"…and {len(new_skus) - MAX_ITEMS_IN_PUSH} more")
         lines.append("")

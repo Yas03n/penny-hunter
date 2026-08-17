@@ -81,6 +81,10 @@ a{color:inherit;text-decoration:none}
 }
 .live{color:var(--green);font-weight:600}
 .gone{color:var(--muted)}
+/* Where a find has been confirmed. ca-yes is the strongest pre-drive signal
+   we have: California shoppers reported it ringing $0.01 recently. */
+.ca-yes{background:#e7f3ec;color:var(--green);border-radius:999px;padding:1px 8px;font-weight:700;font-size:11.5px}
+.ca-no{color:var(--muted)}
 /* One-tap store pin. HD ignores store codes in URLs (verified Aug 2026), so
    the only way to hold a store is HD's own cookie — this strip is the setter. */
 .pin{display:flex;flex-wrap:wrap;gap:4px 10px;align-items:baseline;padding:11px 16px;margin-bottom:10px;font-size:12.5px;color:var(--dim)}
@@ -170,7 +174,7 @@ footer{color:var(--muted);font-size:11.5px;line-height:1.7;border-top:1px solid 
     </div>
     <div class="card">
       {{CARDS}}
-      <div class="tnote">Home Depot ignores store codes in links (verified Aug 2026), so stock pages follow the store pinned in your browser — tap “Pin East Irvine #8525” above, then <b>Shop This Store</b> on Home Depot, once; after that every Check stock link stays on #8525 wherever you are. Backups: Tustin #603 · Costa Mesa #6664. Prices are what the community reports these ring at — both sources are penny lists, so an item with no published retail still shows $0.01. Item names are auto-extracted near the SKU. <b>Only an in-store UPC scan confirms a penny.</b></div>
+      <div class="tnote"><b>These lists are national.</b> A penny SKU is a chain-wide markdown state, not a one-store event — but markdown timing varies by market and most stores have already pulled or sold the units. <b>✓ confirmed in CA</b> means California shoppers reported it ringing $0.01 recently (data: PennyCentral; Penny Pinchin&#x27; Mom publishes no locations). “No CA reports yet” does not mean it isn&#x27;t here — it means nobody has confirmed it yet. Home Depot ignores store codes in links (verified Aug 2026), so stock pages follow the store pinned in your browser — tap “Pin East Irvine #8525” above, then <b>Shop This Store</b> on Home Depot, once. Backups: Tustin #603 · Costa Mesa #6664. <b>Only an in-store UPC scan confirms a penny.</b></div>
     </div>
   </section>
 

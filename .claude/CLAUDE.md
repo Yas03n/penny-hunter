@@ -122,10 +122,24 @@ trusting it.
   SKUs at once; 40 buzzes at 4 AM is how you stop reading notifications.
 - **A sweep that finds nothing writes nothing and says nothing.** At 144 sweeps a
   day, writing every time would bury the repo in empty commits and the phone in
-  empty alerts. `has_changed()` compares `{sku: price}` against the last written
-  state, which catches an arrival, a drop-off and a price move in one comparison
-  — including the one-in-one-out case a count check would miss. **A commit in
-  this repo therefore means the lists actually moved.**
+  empty alerts. `has_changed()` compares `{sku: (price, ca)}` against the last
+  written state, which catches an arrival, a drop-off, a price move and a CA
+  confirmation flip in one comparison — including the one-in-one-out case a
+  count check would miss. Report **counts** are deliberately excluded from the
+  signature: they tick up constantly and would reintroduce the commit spam.
+  **A commit in this repo therefore means the lists actually moved.**
+- **The lists are national; "confirmed in CA" is scraped, not assumed.** A penny
+  SKU is a chain-wide markdown state, so no find belongs to any store. What we
+  can know: PennyCentral's `?state=CA` filter is server-side (verified
+  2026-08-17 — CA returned 12 SKUs, TX 13, different sets) and is the
+  authoritative `ca` flag; per-state counts in the visible text show only the
+  top ~4 states, so CA can hide in "+ N more" — never derive `ca` from that
+  text alone. The state page also surfaces CA-confirmed SKUs from
+  PennyCentral's later pages that the main (page-1-only) scrape never sees.
+  Penny Pinchin' Mom publishes no location data at all: its items must show
+  "no location data", never "no CA reports" — unknown is not no. On a failed
+  state-page fetch, `merge()` and `has_changed()` both keep the stored `ca`
+  value rather than clearing it.
 - **`has_changed()` must be called before `merge()`**, which stamps `last_seen`
   and would erase the very difference being measured.
 - **The 4 AM / 1 PM digests notify even when nothing is new.** That is the point
