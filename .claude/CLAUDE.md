@@ -147,6 +147,21 @@ trusting it.
   quiet day is legible as "nothing new" rather than "this is frozen". Don't
   remove it — that confusion is exactly what prompted it.
 
+- **"Check stock" links are deliberately bare (`/s/<digits>`) — do not add a
+  store parameter.** Verified empirically 2026-08-17 with headless Chrome on
+  fresh profiles: `?store=8525`, `?storeSelection=8525`,
+  `?storefilter=store&storeSelection=8525` (on `/s/`) and `?store=8525` (on
+  `/p/`) are all silently ignored — the page geolocates the IP regardless
+  (cold visitors got Cumberland GA / E Las Vegas / N Reno on successive runs).
+  Even visiting the `/l/…/8525` store page does not localize the session.
+  Store context lives only in HD's `THD_LOCALIZER` cookie, set by the
+  "Shop This Store" button. That is why the Finds tab carries the
+  "Pin East Irvine #8525" strip (canonical URL:
+  `https://www.homedepot.com/l/East-Irvine/CA/Irvine/92620/8525`) — one tap
+  there + Shop This Store pins every later link. A `?store=` param would look
+  right and do nothing; re-verify with a rendered browser before believing
+  HD has changed this.
+
 ## Known limits
 
 - GitHub disables scheduled workflows after ~60 days of repo inactivity. The
